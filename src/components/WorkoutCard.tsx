@@ -5,8 +5,16 @@ import { MapPin, TrendingUp, Clock } from 'lucide-react'
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!
 
-function buildStaticMapUrl(geojson: GeoJSON.Feature): string {
-  // Encode the route as a GeoJSON overlay on the static map
+const TYPE_ACCENT: Record<string, string> = {
+  easy: 'bg-blue-500',
+  tempo: 'bg-orange-500',
+  intervals: 'bg-red-500',
+  hill: 'bg-yellow-500',
+  long: 'bg-purple-500',
+  progressive: 'bg-green-500',
+}
+
+function buildRouteMapUrl(geojson: GeoJSON.Feature): string {
   const encoded = encodeURIComponent(JSON.stringify(geojson))
   return (
     `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
@@ -15,10 +23,14 @@ function buildStaticMapUrl(geojson: GeoJSON.Feature): string {
   )
 }
 
-function formatPace(paceMinPerKm: number) {
-  const min = Math.floor(paceMinPerKm)
-  const sec = Math.round((paceMinPerKm - min) * 60)
-  return `${min}:${sec.toString().padStart(2, '0')}/km`
+function buildLocationMapUrl(lng: number, lat: number): string {
+  // Generic area map centred on user when no route is stored
+  return (
+    `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
+    `pin-s+22c55e(${lng},${lat})/` +
+    `${lng},${lat},13/400x180@2x` +
+    `?access_token=${TOKEN}`
+  )
 }
 
 function estimateDuration(workout: Workout): string {
@@ -39,34 +51,46 @@ function estimateDuration(workout: Workout): string {
   return '—'
 }
 
-export function WorkoutCard({ workout }: { workout: Workout }) {
+interface WorkoutCardProps {
+  workout: Workout
+  userLocation?: [number, number] | null
+}
+
+export function WorkoutCard({ workout, userLocation }: WorkoutCardProps) {
+  const hasRoute = !!workout.route_geojson
+  const mapUrl = hasRoute
+    ? buildRouteMapUrl(workout.route_geojson as GeoJSON.Feature)
+    : userLocation
+    ? buildLocationMapUrl(userLocation[0], userLocation[1])
+    : null
+
   return (
     <Link href={`/workouts/${workout.id}`}>
       <div className="group bg-gray-900 border border-gray-800 rounded-xl overflow-hidden hover:border-green-500/50 hover:bg-gray-900/80 transition-all duration-200 cursor-pointer">
-        {/* Top accent bar by type */}
-        <div
-          className={`h-1 w-full ${
-            {
-              easy: 'bg-blue-500',
-              tempo: 'bg-orange-500',
-              intervals: 'bg-red-500',
-              hill: 'bg-yellow-500',
-              long: 'bg-purple-500',
-              progressive: 'bg-green-500',
-            }[workout.type]
-          }`}
-        />
+        {/* Accent bar */}
+        <div className={`h-1 w-full ${TYPE_ACCENT[workout.type] ?? 'bg-gray-600'}`} />
 
         {/* Map preview */}
-        {workout.route_geojson && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={buildStaticMapUrl(workout.route_geojson as GeoJSON.Feature)}
-            alt="Route map"
-            width={400}
-            height={180}
-            className="w-full h-36 object-cover"
-          />
+        {mapUrl ? (
+          <div className="relative">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={mapUrl}
+              alt="Route map"
+              width={400}
+              height={180}
+              className="w-full h-36 object-cover"
+            />
+            {!hasRoute && (
+              <div className="absolute bottom-2 right-2 bg-gray-900/80 text-gray-400 text-[10px] px-2 py-1 rounded">
+                No route drawn
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="w-full h-36 bg-gray-800 flex items-center justify-center">
+            <MapPin className="w-5 h-5 text-gray-600" />
+          </div>
         )}
 
         <div className="p-5">

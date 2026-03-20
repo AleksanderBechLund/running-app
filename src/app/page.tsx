@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { WorkoutCard } from '@/components/WorkoutCard'
+import { WorkoutGrid } from '@/components/WorkoutGrid'
 import { Calculator } from '@/components/Calculator'
 import Link from 'next/link'
 import { WorkoutType } from '@/types/workout'
@@ -95,22 +95,7 @@ export default async function HomePage({
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
         {/* Workout grid */}
         <div className="lg:col-span-3">
-          {workouts && workouts.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-              {workouts.map(workout => (
-                <WorkoutCard key={workout.id} workout={workout} />
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-20 text-gray-500">
-              <p className="text-lg">No workouts found.</p>
-              {user && (
-                <Link href="/workouts/new" className="text-green-400 hover:text-green-300 text-sm mt-2 inline-block">
-                  Be the first to create one
-                </Link>
-              )}
-            </div>
-          )}
+          <WorkoutGrid workouts={workouts ?? []} user={user} />
         </div>
 
         {/* Sidebar */}
