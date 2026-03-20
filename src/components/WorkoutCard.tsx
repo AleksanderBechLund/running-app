@@ -38,14 +38,14 @@ function buildRouteMapUrl(geojson: GeoJSON.Feature): string {
     properties: {},
     geometry: { type: 'LineString', coordinates: simplified },
   }
-  // Style the line green
+  // Style the line red — visible on light/topo backgrounds
   const withStyle = {
     ...smallGeojson,
-    properties: { stroke: '#22c55e', 'stroke-width': 3 },
+    properties: { stroke: '#e53e3e', 'stroke-width': 3 },
   }
   const encoded = encodeURIComponent(JSON.stringify(withStyle))
   const url =
-    `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
+    `https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/static/` +
     `geojson(${encoded})/auto/400x180@2x` +
     `?padding=40&access_token=${TOKEN}`
   return url
@@ -54,8 +54,8 @@ function buildRouteMapUrl(geojson: GeoJSON.Feature): string {
 function buildLocationMapUrl(lng: number, lat: number): string {
   // Generic area map centred on user when no route is stored
   return (
-    `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
-    `pin-s+22c55e(${lng},${lat})/` +
+    `https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/static/` +
+    `pin-s+e53e3e(${lng},${lat})/` +
     `${lng},${lat},13/400x180@2x` +
     `?access_token=${TOKEN}`
   )

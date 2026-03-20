@@ -80,7 +80,29 @@ export function WorkoutMap({
 
     const map = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
+      style: {
+        version: 8,
+        glyphs: 'mapbox://fonts/mapbox/{fontstack}/{range}',
+        sources: {
+          kartverket: {
+            type: 'raster',
+            tiles: [
+              'https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png',
+            ],
+            tileSize: 256,
+            attribution: '© <a href="https://www.kartverket.no">Kartverket</a>',
+          },
+        },
+        layers: [
+          {
+            id: 'kartverket-tiles',
+            type: 'raster',
+            source: 'kartverket',
+            minzoom: 0,
+            maxzoom: 20,
+          },
+        ],
+      },
       center: initialCenter,
       zoom: initialZoom,
       attributionControl: false,
@@ -109,14 +131,14 @@ export function WorkoutMap({
             type: 'line',
             filter: ['all', ['==', '$type', 'LineString'], ['!=', 'mode', 'static']],
             layout: { 'line-cap': 'round', 'line-join': 'round' },
-            paint: { 'line-color': '#22c55e', 'line-width': 3, 'line-opacity': 0.9 },
+            paint: { 'line-color': '#e53e3e', 'line-width': 3, 'line-opacity': 0.95 },
           },
           {
             id: 'gl-draw-line-static',
             type: 'line',
             filter: ['all', ['==', '$type', 'LineString'], ['==', 'mode', 'static']],
             layout: { 'line-cap': 'round', 'line-join': 'round' },
-            paint: { 'line-color': '#22c55e', 'line-width': 3, 'line-opacity': 0.9 },
+            paint: { 'line-color': '#e53e3e', 'line-width': 3, 'line-opacity': 0.95 },
           },
           {
             id: 'gl-draw-vertex-halo',
@@ -128,13 +150,13 @@ export function WorkoutMap({
             id: 'gl-draw-vertex',
             type: 'circle',
             filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point']],
-            paint: { 'circle-radius': 5, 'circle-color': '#22c55e' },
+            paint: { 'circle-radius': 5, 'circle-color': '#e53e3e' },
           },
           {
             id: 'gl-draw-midpoint',
             type: 'circle',
             filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
-            paint: { 'circle-radius': 4, 'circle-color': '#22c55e', 'circle-opacity': 0.7 },
+            paint: { 'circle-radius': 4, 'circle-color': '#e53e3e', 'circle-opacity': 0.8 },
           },
         ],
       })
@@ -154,7 +176,7 @@ export function WorkoutMap({
           type: 'line',
           source: 'route',
           layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: { 'line-color': '#22c55e', 'line-width': 4, 'line-opacity': 0.9 },
+          paint: { 'line-color': '#e53e3e', 'line-width': 4, 'line-opacity': 0.95 },
         })
 
         if (route.geometry.type === 'LineString') {
