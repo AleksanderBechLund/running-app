@@ -116,9 +116,44 @@ async function getDirectionsRoute(
   }
 }
 
+// Build cumulative distance array (in meters) along a coordinate sequence
+function buildCumDist(coords: number[][]): number[] {
+  const R = 6371000
+  const cum: number[] = [0]
+  for (let i = 1; i < coords.length; i++) {
+    const prev = coords[i - 1]
+    const cur = coords[i]
+    const dLat = ((cur[1] - prev[1]) * Math.PI) / 180
+    const dLng = ((cur[0] - prev[0]) * Math.PI) / 180
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((prev[1] * Math.PI) / 180) * Math.cos((cur[1] * Math.PI) / 180) * Math.sin(dLng / 2) ** 2
+    cum.push(cum[i - 1] + 2 * R * Math.asin(Math.sqrt(a)))
+  }
+  return cum
+}
+
 async function getElevationProfile(coords: number[][]): Promise<{ profile: number[]; gain: number }> {
-  const step = Math.max(1, Math.floor(coords.length / 30))
-  const sampled = coords.filter((_, i) => i % step === 0).slice(0, 30)
+  const NUM_SAMPLES = 30
+  if (coords.length === 0) return { profile: [], gain: 0 }
+
+  // Sample evenly by route distance, not by array index
+  const cum = buildCumDist(coords)
+  const totalDist = cum[cum.length - 1]
+  const sampled: number[][] = []
+
+  for (let k = 0; k < NUM_SAMPLES; k++) {
+    const target = (k / (NUM_SAMPLES - 1)) * totalDist
+    // Binary-search for the closest coordinate
+    let lo = 0, hi = cum.length - 1
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1
+      if (cum[mid] < target) lo = mid; else hi = mid
+    }
+    // Pick whichever end is closer
+    const idx = (target - cum[lo]) <= (cum[hi] - target) ? lo : hi
+    sampled.push(coords[idx])
+  }
 
   try {
     const elevations = await Promise.all(
@@ -148,16 +183,17 @@ async function getElevationProfile(coords: number[][]): Promise<{ profile: numbe
   }
 }
 
-// Find a nearby hill: sample 8 directions, pick steepest
+// Find a nearby hill: sample 8 directions, pick steepest with >7% grade
 async function findNearbyHill(
   origin: [number, number]
-): Promise<{ point: [number, number]; topPoint: [number, number]; gain: number; bearing: number } | null> {
+): Promise<{ point: [number, number]; topPoint: [number, number]; gain: number; gradePercent: number; bearing: number } | null> {
   const bearings = [0, 45, 90, 135, 180, 225, 270, 315]
+  // Sample distances: 200m apart gives 200m segments — grade = gain/200
+  const sampleDistances = [100, 300, 500, 700, 900]
 
   const candidates = await Promise.all(
     bearings.map(async (bearing) => {
-      // Sample at 3 distances to find a good hill segment
-      const pts = [300, 500, 700, 900].map(d => offsetPoint(origin, bearing, d))
+      const pts = sampleDistances.map(d => offsetPoint(origin, bearing, d))
       try {
         const results = await Promise.all(
           pts.map(async p => {
@@ -173,27 +209,32 @@ async function findNearbyHill(
             return eles.length > 0 ? Math.max(...eles) : 0
           })
         )
-        // Find the steepest 400m segment
+        // Find the steepest consecutive 200m segment
+        let bestGrade = 0
         let bestGain = 0
         let bestBase = pts[0]
         let bestTop = pts[1]
         for (let i = 0; i < results.length - 1; i++) {
-          const g = results[i + 1] - results[i]
-          if (g > bestGain) {
-            bestGain = g
+          const segmentDistM = sampleDistances[i + 1] - sampleDistances[i] // always 200m
+          const elevGain = results[i + 1] - results[i]
+          const grade = elevGain > 0 ? (elevGain / segmentDistM) * 100 : 0
+          if (grade > bestGrade) {
+            bestGrade = grade
+            bestGain = elevGain
             bestBase = pts[i]
             bestTop = pts[i + 1]
           }
         }
-        return { point: bestBase, topPoint: bestTop, gain: bestGain, bearing }
+        return { point: bestBase, topPoint: bestTop, gain: bestGain, gradePercent: Math.round(bestGrade), bearing }
       } catch {
-        return { point: pts[0], topPoint: pts[1], gain: 0, bearing }
+        return { point: pts[0], topPoint: pts[1], gain: 0, gradePercent: 0, bearing }
       }
     })
   )
 
-  const best = candidates.sort((a, b) => b.gain - a.gain)[0]
-  if (best.gain < 10) return null
+  const best = candidates.sort((a, b) => b.gradePercent - a.gradePercent)[0]
+  // Require at least 7% grade to qualify as a hill
+  if (best.gradePercent < 7) return null
   return best
 }
 
@@ -335,13 +376,13 @@ export async function generateRouteSuggestions(
     ]
     const { profile, gain } = await getElevationProfile(allCoords)
 
-    const actualGain = hill?.gain ?? 30
-    const gradePercent = Math.max(1, Math.round((actualGain / 200) * 100))
+    const actualGain = hill?.gain ?? 20
+    const gradePercent = hill?.gradePercent ?? 8
 
     return {
       id: 'hill-repeats',
       title: `Hill Repeats — ${gradePercent}% grade nearby`,
-      description: `Found a ${actualGain}m elevation gain nearby. ${gradePercent >= 8 ? 'Steep enough for real power work!' : 'A moderate grade — good for form drills.'}`,
+      description: `Found a ${gradePercent}% grade hill nearby (${actualGain}m gain over 200m). ${gradePercent >= 10 ? 'Steep — real power work!' : 'Good gradient for hill repeats.'}`,
       type: 'hill',
       distanceKm: 5,
       elevationGain: actualGain * 6 + gain,
@@ -364,7 +405,7 @@ export async function generateRouteSuggestions(
         { type: 'cooldown', label: 'Easy jog back home', distance_km: 0.5, pace_min_per_km: 6.5, duration_seconds: 330 },
       ],
       hillSpots: hill
-        ? [{ lng: hillBase[0], lat: hillBase[1], grade: gradePercent, name: `${actualGain}m hill` }]
+        ? [{ lng: hillBase[0], lat: hillBase[1], grade: gradePercent, name: `${gradePercent}% hill` }]
         : undefined,
     }
   }
