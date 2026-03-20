@@ -3,6 +3,18 @@ import Link from 'next/link'
 import { WorkoutBadge } from './WorkoutBadge'
 import { MapPin, TrendingUp, Clock } from 'lucide-react'
 
+const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!
+
+function buildStaticMapUrl(geojson: GeoJSON.Feature): string {
+  // Encode the route as a GeoJSON overlay on the static map
+  const encoded = encodeURIComponent(JSON.stringify(geojson))
+  return (
+    `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
+    `geojson(${encoded})/auto/400x180@2x` +
+    `?padding=30&access_token=${TOKEN}`
+  )
+}
+
 function formatPace(paceMinPerKm: number) {
   const min = Math.floor(paceMinPerKm)
   const sec = Math.round((paceMinPerKm - min) * 60)
@@ -44,6 +56,18 @@ export function WorkoutCard({ workout }: { workout: Workout }) {
             }[workout.type]
           }`}
         />
+
+        {/* Map preview */}
+        {workout.route_geojson && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={buildStaticMapUrl(workout.route_geojson as GeoJSON.Feature)}
+            alt="Route map"
+            width={400}
+            height={180}
+            className="w-full h-36 object-cover"
+          />
+        )}
 
         <div className="p-5">
           <div className="flex items-start justify-between gap-2 mb-2">
