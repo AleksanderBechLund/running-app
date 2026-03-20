@@ -17,11 +17,14 @@ async function fetchElevationProfile(coordinates: number[][]): Promise<number[]>
     const elevations = await Promise.all(
       sampled.map(async (coord) => {
         const res = await fetch(
-          `https://api.mapbox.com/v4/mapbox.mapbox-terrain-v2/tilequery/${coord[0]},${coord[1]}.json?layers=contour&limit=1&access_token=${TOKEN}`
+          `https://api.mapbox.com/v4/mapbox.mapbox-terrain-v2/tilequery/${coord[0]},${coord[1]}.json?layers=contour&limit=50&access_token=${TOKEN}`
         )
         if (!res.ok) return 0
         const json = await res.json()
-        return json.features?.[0]?.properties?.ele ?? 0
+        const eles: number[] = (json.features ?? []).map(
+          (f: { properties: { ele?: number } }) => f.properties?.ele ?? 0
+        )
+        return eles.length > 0 ? Math.max(...eles) : 0
       })
     )
     return elevations
