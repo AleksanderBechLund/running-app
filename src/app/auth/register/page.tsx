@@ -20,7 +20,7 @@ export default function RegisterPage() {
     setLoading(true)
     setError(null)
 
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName } },
@@ -28,8 +28,15 @@ export default function RegisterPage() {
 
     if (error) {
       setError(error.message)
-    } else {
+    } else if (data.user && !data.session) {
+      // Email confirmation required
       setSuccess(true)
+    } else if (data.session) {
+      // Auto-confirmed (email confirmation disabled in Supabase)
+      router.push('/')
+      router.refresh()
+    } else {
+      setError('Something went wrong. Please try again.')
     }
     setLoading(false)
   }
