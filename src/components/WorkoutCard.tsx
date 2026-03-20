@@ -14,13 +14,41 @@ const TYPE_ACCENT: Record<string, string> = {
   progressive: 'bg-green-500',
 }
 
+// Simplify a coordinate array to at most maxPoints using uniform sampling
+function simplifyCoords(coords: number[][], maxPoints: number): number[][] {
+  if (coords.length <= maxPoints) return coords
+  const step = (coords.length - 1) / (maxPoints - 1)
+  const result: number[][] = []
+  for (let i = 0; i < maxPoints; i++) {
+    result.push(coords[Math.round(i * step)])
+  }
+  return result
+}
+
 function buildRouteMapUrl(geojson: GeoJSON.Feature): string {
-  const encoded = encodeURIComponent(JSON.stringify(geojson))
-  return (
+  if (geojson.geometry.type !== 'LineString') return ''
+
+  // Simplify to 25 points so the URL stays well under 8192 chars
+  const simplified = simplifyCoords(
+    (geojson.geometry as GeoJSON.LineString).coordinates,
+    25
+  )
+  const smallGeojson: GeoJSON.Feature = {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'LineString', coordinates: simplified },
+  }
+  // Style the line green
+  const withStyle = {
+    ...smallGeojson,
+    properties: { stroke: '#22c55e', 'stroke-width': 3 },
+  }
+  const encoded = encodeURIComponent(JSON.stringify(withStyle))
+  const url =
     `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
     `geojson(${encoded})/auto/400x180@2x` +
-    `?padding=30&access_token=${TOKEN}`
-  )
+    `?padding=40&access_token=${TOKEN}`
+  return url
 }
 
 function buildLocationMapUrl(lng: number, lat: number): string {
