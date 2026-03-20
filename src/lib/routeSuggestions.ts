@@ -47,6 +47,29 @@ function lngLatDist(a: number[], b: number[]): number {
   return Math.sqrt(dlng * dlng + dlat * dlat)
 }
 
+// Build cumulative distance array (in meters) along a coordinate sequence using Haversine
+function buildCumDist(coords: number[][]): number[] {
+  const R = 6371000
+  const cum: number[] = [0]
+  for (let i = 1; i < coords.length; i++) {
+    const prev = coords[i - 1]
+    const cur = coords[i]
+    const dLat = ((cur[1] - prev[1]) * Math.PI) / 180
+    const dLng = ((cur[0] - prev[0]) * Math.PI) / 180
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((prev[1] * Math.PI) / 180) * Math.cos((cur[1] * Math.PI) / 180) * Math.sin(dLng / 2) ** 2
+    cum.push(cum[i - 1] + 2 * R * Math.asin(Math.sqrt(a)))
+  }
+  return cum
+}
+
+// Compute total route distance in km using Haversine
+function routeDistanceKm(coords: number[][]): number {
+  const cum = buildCumDist(coords)
+  return cum[cum.length - 1] / 1000
+}
+
 // Use Mapbox Isochrone API to get a reachable polygon, then pick waypoints evenly by arc-length
 async function getIsochroneWaypoints(
   origin: [number, number],
@@ -64,18 +87,17 @@ async function getIsochroneWaypoints(
     const polygon: number[][] = data.features?.[0]?.geometry?.coordinates?.[0]
     if (!polygon || polygon.length < 4) return []
 
-    // Build cumulative arc-length table
+    // Build cumulative arc-length table along the polygon boundary
     const arcLen: number[] = [0]
     for (let i = 1; i < polygon.length; i++) {
       arcLen.push(arcLen[i - 1] + lngLatDist(polygon[i - 1], polygon[i]))
     }
     const totalLen = arcLen[arcLen.length - 1]
 
-    // Sample numPoints evenly spaced by arc-length (skip the closing duplicate point)
+    // Sample numPoints evenly spaced by arc-length
     const waypoints: [number, number][] = []
     for (let k = 0; k < numPoints; k++) {
       const target = (k / numPoints) * totalLen
-      // Find the segment containing this arc-length
       let idx = arcLen.findIndex(l => l >= target)
       if (idx <= 0) idx = 0
       const pt = polygon[idx]
@@ -87,11 +109,11 @@ async function getIsochroneWaypoints(
   }
 }
 
+// Returns the routed GeoJSON and the authoritative distance in meters from Mapbox Directions
 async function getDirectionsRoute(
   waypoints: [number, number][]
-): Promise<GeoJSON.Feature<GeoJSON.LineString> | null> {
+): Promise<{ geojson: GeoJSON.Feature<GeoJSON.LineString>; distanceM: number } | null> {
   if (waypoints.length < 2) return null
-  // Mapbox Directions supports max 25 waypoints
   const capped = waypoints.slice(0, 25)
   const coords = capped.map(w => w.join(',')).join(';')
   const url =
@@ -104,33 +126,19 @@ async function getDirectionsRoute(
     const data = await res.json()
     if (!data.routes?.[0]) return null
     const distanceM: number = data.routes[0].distance
-    // Sanity check: reject routes that are absurdly long (ferries, wrong routing)
+    // Sanity check: reject absurdly long routes (ferries, wrong routing)
     if (distanceM > 25000) return null
     return {
-      type: 'Feature',
-      properties: {},
-      geometry: data.routes[0].geometry,
+      geojson: {
+        type: 'Feature',
+        properties: {},
+        geometry: data.routes[0].geometry,
+      },
+      distanceM,
     }
   } catch {
     return null
   }
-}
-
-// Build cumulative distance array (in meters) along a coordinate sequence
-function buildCumDist(coords: number[][]): number[] {
-  const R = 6371000
-  const cum: number[] = [0]
-  for (let i = 1; i < coords.length; i++) {
-    const prev = coords[i - 1]
-    const cur = coords[i]
-    const dLat = ((cur[1] - prev[1]) * Math.PI) / 180
-    const dLng = ((cur[0] - prev[0]) * Math.PI) / 180
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos((prev[1] * Math.PI) / 180) * Math.cos((cur[1] * Math.PI) / 180) * Math.sin(dLng / 2) ** 2
-    cum.push(cum[i - 1] + 2 * R * Math.asin(Math.sqrt(a)))
-  }
-  return cum
 }
 
 async function getElevationProfile(coords: number[][]): Promise<{ profile: number[]; gain: number }> {
@@ -144,13 +152,11 @@ async function getElevationProfile(coords: number[][]): Promise<{ profile: numbe
 
   for (let k = 0; k < NUM_SAMPLES; k++) {
     const target = (k / (NUM_SAMPLES - 1)) * totalDist
-    // Binary-search for the closest coordinate
     let lo = 0, hi = cum.length - 1
     while (lo < hi - 1) {
       const mid = (lo + hi) >> 1
       if (cum[mid] < target) lo = mid; else hi = mid
     }
-    // Pick whichever end is closer
     const idx = (target - cum[lo]) <= (cum[hi] - target) ? lo : hi
     sampled.push(coords[idx])
   }
@@ -188,7 +194,7 @@ async function findNearbyHill(
   origin: [number, number]
 ): Promise<{ point: [number, number]; topPoint: [number, number]; gain: number; gradePercent: number; bearing: number } | null> {
   const bearings = [0, 45, 90, 135, 180, 225, 270, 315]
-  // Sample distances: 200m apart gives 200m segments — grade = gain/200
+  // 200m apart segments — grade = gain/200
   const sampleDistances = [100, 300, 500, 700, 900]
 
   const candidates = await Promise.all(
@@ -233,7 +239,6 @@ async function findNearbyHill(
   )
 
   const best = candidates.sort((a, b) => b.gradePercent - a.gradePercent)[0]
-  // Require at least 7% grade to qualify as a hill
   if (best.gradePercent < 7) return null
   return best
 }
@@ -244,10 +249,8 @@ export async function generateRouteSuggestions(
 ): Promise<SuggestedRoute | null> {
 
   if (workoutType === 'easy') {
-    // Use isochrone (~12 min walk radius ≈ 1km) to get reachable boundary, pick 4 waypoints
     let waypoints = await getIsochroneWaypoints(origin, 12, 4)
 
-    // Fallback: if isochrone fails, try smaller offsets in cardinal directions
     if (waypoints.length < 2) {
       waypoints = [
         origin,
@@ -257,22 +260,15 @@ export async function generateRouteSuggestions(
         origin,
       ]
     } else {
-      // Close the loop back to origin
       waypoints = [origin, ...waypoints, origin]
     }
 
-    const geojson = await getDirectionsRoute(waypoints)
-    if (!geojson) return null
+    const result = await getDirectionsRoute(waypoints)
+    if (!result) return null
 
+    const { geojson, distanceM } = result
+    const distKm = parseFloat((distanceM / 1000).toFixed(2))
     const coords = geojson.geometry.coordinates
-    const distKm = coords.reduce((d, c, i) => {
-      if (i === 0) return 0
-      const prev = coords[i - 1]
-      const dlng = (c[0] - prev[0]) * Math.cos(prev[1] * Math.PI / 180)
-      const dlat = c[1] - prev[1]
-      return d + Math.sqrt(dlng * dlng + dlat * dlat) * 111
-    }, 0)
-
     const { profile, gain } = await getElevationProfile(coords)
 
     return {
@@ -280,7 +276,7 @@ export async function generateRouteSuggestions(
       title: 'Easy Loop Run',
       description: 'A relaxed loop through your local area — perfect for an easy aerobic run at conversational pace.',
       type: 'easy',
-      distanceKm: parseFloat(distKm.toFixed(2)),
+      distanceKm: distKm,
       elevationGain: gain,
       elevationProfile: profile,
       geojson,
@@ -293,49 +289,39 @@ export async function generateRouteSuggestions(
   }
 
   if (workoutType === 'tempo') {
-    // Use isochrone (~35 min walking ≈ 4km radius) to get reachable polygon,
-    // then pick a point on that boundary as the turnaround — guaranteed on land / walkable paths
     const isoWaypoints = await getIsochroneWaypoints(origin, 35, 8)
 
-    let geojson: GeoJSON.Feature<GeoJSON.LineString> | null = null
+    let routeResult: { geojson: GeoJSON.Feature<GeoJSON.LineString>; distanceM: number } | null = null
 
     if (isoWaypoints.length >= 2) {
-      // Try each isochrone boundary point as a turnaround, pick first that routes OK
       for (const turnaround of isoWaypoints) {
         const candidate = await getDirectionsRoute([origin, turnaround, origin])
         if (candidate) {
-          geojson = candidate
+          routeResult = candidate
           break
         }
       }
     }
 
-    // Fallback: try bearing-based offsets if isochrone failed
-    if (!geojson) {
+    if (!routeResult) {
       const bearingsToTry = [0, 45, 90, 135, 180, 225, 270, 315]
-      const targetDist = 4000 // 4km out = 8km total
+      const targetDist = 4000
       for (const bearing of bearingsToTry) {
         const turnaround = offsetPoint(origin, bearing, targetDist)
         const mid = offsetPoint(origin, bearing, targetDist / 2)
         const candidate = await getDirectionsRoute([origin, mid, turnaround, mid, origin])
         if (candidate) {
-          geojson = candidate
+          routeResult = candidate
           break
         }
       }
     }
 
-    if (!geojson) return null
+    if (!routeResult) return null
 
+    const { geojson, distanceM } = routeResult
+    const distKm = parseFloat((distanceM / 1000).toFixed(2))
     const coords = geojson.geometry.coordinates
-    const distKm = coords.reduce((d, c, i) => {
-      if (i === 0) return 0
-      const prev = coords[i - 1]
-      const dlng = (c[0] - prev[0]) * Math.cos(prev[1] * Math.PI / 180)
-      const dlat = c[1] - prev[1]
-      return d + Math.sqrt(dlng * dlng + dlat * dlat) * 111
-    }, 0)
-
     const { profile, gain } = await getElevationProfile(coords)
 
     return {
@@ -343,7 +329,7 @@ export async function generateRouteSuggestions(
       title: 'Tempo Out & Back',
       description: 'Warm up, then run out at threshold pace and return. Classic lactate-threshold builder.',
       type: 'tempo',
-      distanceKm: parseFloat(distKm.toFixed(2)),
+      distanceKm: distKm,
       elevationGain: gain,
       elevationProfile: profile,
       geojson,
@@ -361,10 +347,10 @@ export async function generateRouteSuggestions(
     const hillBase = hill?.point ?? offsetPoint(origin, 0, 400)
     const hillTop = hill?.topPoint ?? offsetPoint(origin, 0, 700)
 
-    const toHillRoute = await getDirectionsRoute([origin, hillBase])
-    const hillSegment = await getDirectionsRoute([hillBase, hillTop])
+    const toHillResult = await getDirectionsRoute([origin, hillBase])
+    const hillSegmentResult = await getDirectionsRoute([hillBase, hillTop])
 
-    const mainGeojson: GeoJSON.Feature<GeoJSON.LineString> = toHillRoute ?? {
+    const mainGeojson: GeoJSON.Feature<GeoJSON.LineString> = toHillResult?.geojson ?? {
       type: 'Feature',
       properties: {},
       geometry: { type: 'LineString', coordinates: [origin, hillBase, hillTop, hillBase, origin] },
@@ -372,9 +358,14 @@ export async function generateRouteSuggestions(
 
     const allCoords = [
       ...mainGeojson.geometry.coordinates,
-      ...(hillSegment?.geometry.coordinates ?? [hillBase, hillTop]),
+      ...(hillSegmentResult?.geojson.geometry.coordinates ?? [hillBase, hillTop]),
     ]
     const { profile, gain } = await getElevationProfile(allCoords)
+
+    // Compute actual route distance: jog to hill + hill segment (x6 repeats) + jog back
+    const toHillKm = (toHillResult?.distanceM ?? routeDistanceKm([origin, hillBase]) * 1000) / 1000
+    const hillSegKm = (hillSegmentResult?.distanceM ?? routeDistanceKm([hillBase, hillTop]) * 1000) / 1000
+    const distKm = parseFloat((toHillKm + hillSegKm * 2 * 6 + toHillKm).toFixed(2))
 
     const actualGain = hill?.gain ?? 20
     const gradePercent = hill?.gradePercent ?? 8
@@ -384,25 +375,25 @@ export async function generateRouteSuggestions(
       title: `Hill Repeats — ${gradePercent}% grade nearby`,
       description: `Found a ${gradePercent}% grade hill nearby (${actualGain}m gain over 200m). ${gradePercent >= 10 ? 'Steep — real power work!' : 'Good gradient for hill repeats.'}`,
       type: 'hill',
-      distanceKm: 5,
+      distanceKm: distKm,
       elevationGain: actualGain * 6 + gain,
       elevationProfile: profile,
       geojson: mainGeojson,
       intervals: [
-        { type: 'warmup', label: 'Jog to the hill', distance_km: 0.5, pace_min_per_km: 6.0, duration_seconds: 300 },
-        { type: 'work', label: 'Hill sprint — hard effort', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'warmup', label: 'Jog to the hill', distance_km: parseFloat(toHillKm.toFixed(2)), pace_min_per_km: 6.0, duration_seconds: Math.round(toHillKm * 360) },
+        { type: 'work', label: 'Hill sprint — hard effort', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'work', label: 'Hill sprint', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'work', label: 'Hill sprint', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'work', label: 'Hill sprint', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'work', label: 'Hill sprint', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'work', label: 'Hill sprint', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'work', label: 'Hill sprint', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'work', label: 'Hill sprint', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'work', label: 'Hill sprint', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'work', label: 'Hill sprint', distance_km: 0.2, pace_min_per_km: null, duration_seconds: 50 },
+        { type: 'work', label: 'Hill sprint', distance_km: parseFloat(hillSegKm.toFixed(2)), pace_min_per_km: null, duration_seconds: 50 },
         { type: 'rest', label: 'Walk/jog back down', distance_km: null, pace_min_per_km: null, duration_seconds: 90 },
-        { type: 'cooldown', label: 'Easy jog back home', distance_km: 0.5, pace_min_per_km: 6.5, duration_seconds: 330 },
+        { type: 'cooldown', label: 'Easy jog back home', distance_km: parseFloat(toHillKm.toFixed(2)), pace_min_per_km: 6.5, duration_seconds: Math.round(toHillKm * 390) },
       ],
       hillSpots: hill
         ? [{ lng: hillBase[0], lat: hillBase[1], grade: gradePercent, name: `${gradePercent}% hill` }]
